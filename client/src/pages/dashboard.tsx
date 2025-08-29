@@ -20,16 +20,15 @@ export default function Dashboard() {
   });
 
   // Fetch clients with filters
+  const queryParams = new URLSearchParams({
+    status: "ACTIVE",
+    ...(accountManager && accountManager !== "all" && { am: accountManager }),
+    ...(healthStatus && healthStatus !== "all" && { health: healthStatus }),
+    ...(searchQuery && { search: searchQuery })
+  });
+  
   const { data: clientsData, isLoading: clientsLoading } = useQuery({
-    queryKey: [
-      "/api/clients", 
-      { 
-        status: "ACTIVE",
-        ...(accountManager && accountManager !== "all" && { am: accountManager }),
-        ...(healthStatus && healthStatus !== "all" && { health: healthStatus }),
-        ...(searchQuery && { search: searchQuery })
-      }
-    ]
+    queryKey: [`/api/clients?${queryParams.toString()}`]
   });
 
   // Fetch departments for filter
