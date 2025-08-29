@@ -1,0 +1,185 @@
+import type { Express } from "express";
+import { createServer, type Server } from "http";
+import { storage } from "./storage";
+import { z } from "zod";
+import { fromZodError } from "zod-validation-error";
+
+export async function registerRoutes(app: Express): Promise<Server> {
+  
+  // Get all clients with filters
+  app.get("/api/clients", async (req, res) => {
+    try {
+      const querySchema = z.object({
+        status: z.enum(["ACTIVE", "INACTIVE"]).optional(),
+        am: z.string().optional(),
+        health: z.enum(["OVER", "ON_TRACK", "UNDER"]).optional(),
+        search: z.string().optional()
+      });
+
+      const filters = querySchema.parse(req.query);
+      
+      const clients = await storage.getClients({
+        status: filters.status,
+        accountManager: filters.am,
+        health: filters.health,
+        search: filters.search
+      });
+
+      res.json({ clients });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        res.status(400).json({ error: fromZodError(error).message });
+      } else {
+        console.error("Error fetching clients:", error);
+        res.status(500).json({ error: "Internal server error" });
+      }
+    }
+  });
+
+  // Get single client with details
+  app.get("/api/clients/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const client = await storage.getClient(id);
+      
+      if (!client) {
+        return res.status(404).json({ error: "Client not found" });
+      }
+
+      // Get team members for this client
+      const teamMembers = await storage.getTeamMembersByClient(id);
+      
+      // Get latest burn snapshots (current month)
+      const now = new Date();
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      const burnSnapshots = await storage.getBurnSnapshots(id, startOfMonth);
+
+      // Get recent time entries
+      const recentTimeEntries = await storage.getTimeEntries({
+        clientId: id,
+        startDate: startOfMonth
+      });
+
+      res.json({
+        client,
+        teamMembers,
+        burnSnapshots,
+        recentTimeEntries: recentTimeEntries.slice(0, 10) // Latest 10
+      });
+    } catch (error) {
+      console.error("Error fetching client:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // Get client history
+  app.get("/api/clients/:id/history", async (req, res) => {
+    try {
+      const { id } = req.params;
+      
+      const monthlySummaries = await storage.getMonthlySummaries(id);
+      
+      // Get daily snapshots for current month
+      const now = new Date();
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      const dailySnapshots = await storage.getBurnSnapshots(id, startOfMonth);
+
+      res.json({
+        monthlySummaries,
+        dailySnapshots
+      });
+    } catch (error) {
+      console.error("Error fetching client history:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // Get departments
+  app.get("/api/departments", async (req, res) => {
+    try {
+      const departments = await storage.getDepartments();
+      res.json({ departments });
+    } catch (error) {
+      console.error("Error fetching departments:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // Get client time by department
+  app.get("/api/clients/:id/time-by-dept", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const querySchema = z.object({
+        month: z.string().regex(/^\d{4}-\d{2}$/).optional()
+      });
+
+      const { month } = querySchema.parse(req.query);
+      
+      const departmentData = await storage.getClientTimeByDepartment(id, month);
+      
+      res.json({ departmentData });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        res.status(400).json({ error: fromZodError(error).message });
+      } else {
+        console.error("Error fetching department time:", error);
+        res.status(500).json({ error: "Internal server error" });
+      }
+    }
+  });
+
+  // Get dashboard summary
+  app.get("/api/dashboard/summary", async (req, res) => {
+    try {
+      const summary = await storage.getDashboardSummary();
+      res.json(summary);
+    } catch (error) {
+      console.error("Error fetching dashboard summary:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // N8n webhook stub
+  app.post("/api/webhooks/n8n", async (req, res) => {
+    try {
+      const webhookSchema = z.object({
+        type: z.enum(["time_entry", "project_update"]),
+        data: z.any()
+      });
+
+      const payload = webhookSchema.parse(req.body);
+      
+      // TODO: Process Accelo-shaped payloads and upsert records
+      console.log("N8n webhook received:", payload);
+      
+      res.status(200).json({ success: true, message: "Webhook processed" });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        res.status(400).json({ error: fromZodError(error).message });
+      } else {
+        console.error("Error processing webhook:", error);
+        res.status(500).json({ error: "Internal server error" });
+      }
+    }
+  });
+
+  // Accelo refresh stub
+  app.post("/api/accelo/refresh", async (req, res) => {
+    try {
+      // TODO: Implement background sync logic
+      console.log("Accelo refresh triggered");
+      
+      res.json({ 
+        success: true, 
+        message: "Background sync initiated",
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      console.error("Error triggering refresh:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  const httpServer = createServer(app);
+  return httpServer;
+}

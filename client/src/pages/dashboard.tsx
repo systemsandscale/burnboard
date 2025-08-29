@@ -1,0 +1,82 @@
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { Header } from "@/components/layout/header";
+import { SummaryStats } from "@/components/dashboard/summary-stats";
+import { Filters } from "@/components/dashboard/filters";
+import { ClientGrid } from "@/components/dashboard/client-grid";
+import { ClientDetail } from "@/components/client-detail/client-detail";
+
+export default function Dashboard() {
+  const [searchQuery, setSearchQuery] = useState("");
+  const [accountManager, setAccountManager] = useState("all");
+  const [healthStatus, setHealthStatus] = useState("all");
+  const [department, setDepartment] = useState("all");
+  const [viewMode, setViewMode] = useState<"cards" | "table">("cards");
+  const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
+
+  // Fetch dashboard summary
+  const { data: summaryData, isLoading: summaryLoading } = useQuery({
+    queryKey: ["/api/dashboard/summary"]
+  });
+
+  // Fetch clients with filters
+  const { data: clientsData, isLoading: clientsLoading } = useQuery({
+    queryKey: [
+      "/api/clients", 
+      { 
+        status: "ACTIVE",
+        ...(accountManager && accountManager !== "all" && { am: accountManager }),
+        ...(healthStatus && healthStatus !== "all" && { health: healthStatus }),
+        ...(searchQuery && { search: searchQuery })
+      }
+    ]
+  });
+
+  // Fetch departments for filter
+  const { data: departmentsData } = useQuery({
+    queryKey: ["/api/departments"]
+  });
+
+  const clients = (clientsData as any)?.clients || [];
+  const departments = (departmentsData as any)?.departments || [];
+
+  return (
+    <div className="min-h-screen bg-background" data-testid="page-dashboard">
+      <Header 
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
+      />
+      
+      <main className="container mx-auto px-6 py-8">
+        <SummaryStats 
+          data={summaryData as any}
+          isLoading={summaryLoading}
+        />
+        
+        <Filters
+          accountManager={accountManager}
+          onAccountManagerChange={setAccountManager}
+          healthStatus={healthStatus}
+          onHealthStatusChange={setHealthStatus}
+          department={department}
+          onDepartmentChange={setDepartment}
+          viewMode={viewMode}
+          onViewModeChange={setViewMode}
+          departments={departments}
+        />
+        
+        <ClientGrid 
+          clients={clients}
+          isLoading={clientsLoading}
+        />
+      </main>
+
+      {selectedClientId && (
+        <ClientDetail
+          clientId={selectedClientId}
+          onClose={() => setSelectedClientId(null)}
+        />
+      )}
+    </div>
+  );
+}
