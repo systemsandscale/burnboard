@@ -526,13 +526,23 @@ export class DatabaseStorage implements IStorage {
       .orderBy(sql`(sum(${timeEntries.costCents}) - (${clients.monthlyRetainerAmountCents} * ${months})) DESC`)
       .limit(5);
 
-    return result.map(row => ({
-      clientId: row.clientId,
-      clientName: row.clientName,
-      accountManager: row.accountManager,
-      averageOverservingHours: (Number(row.totalHours) || 0) / months,
-      averageOverservingCents: (Number(row.totalCostCents) - Number(row.retainerCents)) / months
-    }));
+    return result.map(row => {
+      const totalCostCents = Number(row.totalCostCents) || 0;
+      const retainerCents = Number(row.retainerCents) || 0;
+      const totalHours = Number(row.totalHours) || 0;
+      
+      // Calculate overserving hours based on the ratio of overserving cost to total cost
+      const overservingCents = Math.max(0, totalCostCents - retainerCents);
+      const overservingHours = totalCostCents > 0 ? (overservingCents / totalCostCents) * totalHours : 0;
+      
+      return {
+        clientId: row.clientId,
+        clientName: row.clientName,
+        accountManager: row.accountManager,
+        averageOverservingHours: overservingHours / months,
+        averageOverservingCents: overservingCents / months
+      };
+    });
   }
 
   async getTopOverservingEmployees(months: number = 3): Promise<OverservingEmployeeData[]> {
@@ -563,13 +573,24 @@ export class DatabaseStorage implements IStorage {
       .orderBy(sql`sum(${timeEntries.costCents}) DESC`)
       .limit(5);
 
-    return result.map(row => ({
-      memberId: row.memberId,
-      memberName: row.memberName,
-      department: row.departmentName,
-      averageOverservingHours: (Number(row.totalHours) || 0) / months,
-      averageOverservingCents: (Number(row.totalCostCents) || 0) / months
-    }));
+    return result.map(row => {
+      const totalCostCents = Number(row.totalCostCents) || 0;
+      const totalHours = Number(row.totalHours) || 0;
+      const avgRetainerUsage = Number(row.avgRetainerUsage) || 0;
+      
+      // Calculate overserving hours based on usage above baseline (20% threshold)
+      const baselineUsage = 0.2; // 20% baseline
+      const overservingRatio = Math.max(0, avgRetainerUsage - baselineUsage);
+      const overservingHours = overservingRatio * totalHours;
+      
+      return {
+        memberId: row.memberId,
+        memberName: row.memberName,
+        department: row.departmentName,
+        averageOverservingHours: overservingHours / months,
+        averageOverservingCents: totalCostCents / months
+      };
+    });
   }
 
   async calculateLostRevenue(): Promise<number> {
