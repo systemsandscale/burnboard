@@ -6,9 +6,10 @@ import type { ClientWithMetrics } from "@shared/schema";
 interface ClientGridProps {
   clients: ClientWithMetrics[];
   isLoading?: boolean;
+  onClientSelect?: (clientId: string) => void;
 }
 
-export function ClientGrid({ clients, isLoading }: ClientGridProps) {
+export function ClientGrid({ clients, isLoading, onClientSelect }: ClientGridProps) {
   if (isLoading) {
     return (
       <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6 mb-8" data-testid="client-grid-loading">
@@ -55,7 +56,11 @@ export function ClientGrid({ clients, isLoading }: ClientGridProps) {
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6 mb-8" data-testid="client-grid">
       {clients.map((client) => (
-        <ClientCard key={client.id} client={client} />
+        <ClientCard 
+          key={client.id} 
+          client={client}
+          onSelect={onClientSelect}
+        />
       ))}
     </div>
   );

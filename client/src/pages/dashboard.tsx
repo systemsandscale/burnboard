@@ -4,6 +4,7 @@ import { Header } from "@/components/layout/header";
 import { SummaryStats } from "@/components/dashboard/summary-stats";
 import { Filters } from "@/components/dashboard/filters";
 import { ClientGrid } from "@/components/dashboard/client-grid";
+import { ClientTable } from "@/components/dashboard/client-table";
 import { ClientDetail } from "@/components/client-detail/client-detail";
 
 export default function Dashboard() {
@@ -24,6 +25,7 @@ export default function Dashboard() {
     status: "ACTIVE",
     ...(accountManager && accountManager !== "all" && { am: accountManager }),
     ...(healthStatus && healthStatus !== "all" && { health: healthStatus }),
+    ...(department && department !== "all" && { dept: department }),
     ...(searchQuery && { search: searchQuery })
   });
   
@@ -64,10 +66,18 @@ export default function Dashboard() {
           departments={departments}
         />
         
-        <ClientGrid 
-          clients={clients}
-          isLoading={clientsLoading}
-        />
+        {viewMode === "cards" ? (
+          <ClientGrid 
+            clients={clients}
+            isLoading={clientsLoading}
+          />
+        ) : (
+          <ClientTable
+            clients={clients}
+            isLoading={clientsLoading}
+            onClientSelect={setSelectedClientId}
+          />
+        )}
       </main>
 
       {selectedClientId && (

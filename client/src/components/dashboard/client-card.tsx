@@ -8,15 +8,20 @@ import { useLocation } from "wouter";
 
 interface ClientCardProps {
   client: ClientWithMetrics;
+  onSelect?: (clientId: string) => void;
 }
 
-export function ClientCard({ client }: ClientCardProps) {
+export function ClientCard({ client, onSelect }: ClientCardProps) {
   const [, setLocation] = useLocation();
   const variance = formatVariance(client.varianceCents, client.variancePct);
   const burnPercentage = Math.min(client.burnPctMTD * 100, 100);
 
   const handleClick = () => {
-    setLocation(`/clients/${client.id}`);
+    if (onSelect) {
+      onSelect(client.id);
+    } else {
+      setLocation(`/clients/${client.id}`);
+    }
   };
 
   // Generate mock sparkline data for visualization

@@ -13,6 +13,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         status: z.enum(["ACTIVE", "INACTIVE"]).optional(),
         am: z.string().optional(),
         health: z.enum(["OVER", "ON_TRACK", "UNDER"]).optional(),
+        dept: z.string().optional(),
         search: z.string().optional()
       });
 
@@ -22,6 +23,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         status: filters.status,
         accountManager: filters.am,
         health: filters.health,
+        department: filters.dept,
         search: filters.search
       });
 

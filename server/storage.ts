@@ -40,6 +40,7 @@ export interface IStorage {
     status?: "ACTIVE" | "INACTIVE";
     accountManager?: string;
     health?: "OVER" | "ON_TRACK" | "UNDER";
+    department?: string;
     search?: string;
   }): Promise<ClientWithMetrics[]>;
   getClient(id: string): Promise<Client | undefined>;
@@ -107,6 +108,7 @@ export class DatabaseStorage implements IStorage {
     status?: "ACTIVE" | "INACTIVE";
     accountManager?: string;
     health?: "OVER" | "ON_TRACK" | "UNDER";
+    department?: string;
     search?: string;
   }): Promise<ClientWithMetrics[]> {
     let query = db.select().from(clients);
@@ -174,6 +176,34 @@ export class DatabaseStorage implements IStorage {
       // Apply health filter if specified
       if (filters?.health && health !== filters.health) {
         continue;
+      }
+
+      // Apply department filter if specified
+      if (filters?.department) {
+        const departmentQuery = await db
+          .select()
+          .from(departments)
+          .where(eq(departments.name, filters.department));
+        
+        if (departmentQuery.length === 0) {
+          continue; // Department doesn't exist
+        }
+        
+        const departmentId = departmentQuery[0].id;
+        const hasTimeInDepartment = await db
+          .select()
+          .from(timeEntries)
+          .where(
+            and(
+              eq(timeEntries.clientId, client.id),
+              eq(timeEntries.departmentId, departmentId)
+            )
+          )
+          .limit(1);
+          
+        if (hasTimeInDepartment.length === 0) {
+          continue; // Client has no time entries in this department
+        }
       }
 
       clientsWithMetrics.push({
