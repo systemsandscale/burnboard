@@ -575,12 +575,24 @@ export class DatabaseStorage implements IStorage {
   async calculateLostRevenue(): Promise<number> {
     const hourlyRate = await this.getHourlyRate();
     const overservingClients = await this.getTopOverservingClients(1); // Last month
+    const overservingEmployees = await this.getTopOverservingEmployees(1); // Last month
 
-    const totalOverservingCents = overservingClients.reduce((sum, client) => {
-      return sum + Math.max(0, client.averageOverservingCents);
+    // Calculate lost revenue from overserving hours * hourly rate
+    const clientOverservingHours = overservingClients.reduce((sum, client) => {
+      return sum + Math.max(0, client.averageOverservingHours);
     }, 0);
 
-    return totalOverservingCents;
+    const employeeOverservingHours = overservingEmployees.reduce((sum, employee) => {
+      return sum + Math.max(0, employee.averageOverservingHours);
+    }, 0);
+
+    // Use the maximum of client or employee overserving to avoid double counting
+    const totalOverservingHours = Math.max(clientOverservingHours, employeeOverservingHours);
+    
+    // Convert hourly rate to cents and multiply by overserving hours
+    const lostRevenueCents = totalOverservingHours * (hourlyRate * 100);
+    
+    return lostRevenueCents;
   }
 
   // Settings methods
