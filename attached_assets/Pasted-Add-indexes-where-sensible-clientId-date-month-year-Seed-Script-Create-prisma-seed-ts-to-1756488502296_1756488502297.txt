@@ -1,0 +1,101 @@
+Add indexes where sensible (clientId, date, month/year).
+
+### Seed Script
+Create `prisma/seed.ts` to generate:
+- 10 ACTIVE clients, 2 INACTIVE
+- Departments: SEO, Paid Media, Content, Web, Analytics, CX
+- 20 team members mapped to departments
+- ClientTeam mappings (2–4 members per client)
+- For the **current month**, generate daily TimeEntry to produce realistic spend curves per client (some over, some under)
+- Generate last 12 MonthlySummary rows per client with believable variance
+- Generate BurnSnapshot rows for each day this month
+- Monetary values stored in cents; format nicely on UI.
+
+### API Contract (App Router / Route Handlers)
+All routes under `/api` return JSON and use Zod to validate inputs.
+
+- `GET /api/clients?status=ACTIVE|INACTIVE&am=...` → list clients + derived fields:
+  - mtdSpendCents, mtdHours, burnPctMTD, idealTargetSpendToDateCents, varianceCents, variancePct, health ("OVER" if > 110%, "UNDER" if < 90%, else "ON_TRACK")
+- `GET /api/clients/[id]` → client, retainer, current MTD stats, team roster, latest snapshots
+- `GET /api/clients/[id]/history` → last 12 months MonthlySummary + daily BurnSnapshot for current month
+- `GET /api/departments` → list departments
+- `GET /api/clients/[id]/time-by-dept?month=YYYY-MM` → aggregated hours/spend by department
+- **n8n stubs**:
+  - `POST /api/webhooks/n8n` → accept Accelo-shaped payloads (time entries, project updates) and upsert records (mock schema). Validate with Zod, return 200.
+  - `POST /api/accelo/refresh` → placeholder endpoint to kick a background sync (mock no-op).
+All endpoints must be **pure and typed**, with domain helpers for calculations in `lib/metrics.ts`.
+
+### Burn Math (lib/metrics.ts)
+Implement helpers:
+- `daysInMonth(date)` and `dayOfMonth(date)`
+- `idealTargetSpendToDate(retainerCents, date)` = retainerCents * (dayOfMonth / daysInMonth)
+- `burnPct(spendCents, retainerCents)` = spendCents / retainerCents
+- `variance(spendCents, targetCents)` = { varianceCents: spend-target, variancePct: spend/target - 1 }
+- `health(variancePct)`:
+   - OVER if burnPctMTD > 1.10
+   - UNDER if burnPctMTD < 0.90
+   - ON_TRACK otherwise
+- If `plannedHours` present, also compute hour-based burn and expose both $ and hours.
+
+### UI
+Global: Tailwind, shadcn/ui theme, responsive layout, dark mode toggle, top nav with search/filter.
+
+**Home / Dashboard (`/`)**
+- Filters: search by client name, filter by AM, by health status, by department involvement.
+- Client cards grid (or table view toggle):
+  - Name, AM, Retainer (formatted $)
+  - MTD Spend vs Retainer (progress bar)
+  - Health badge (Over/On Track/Under)
+  - Sparkline (Recharts) of cumulative spend vs ideal line for current month
+  - Quick stats: MTD spend, ideal target today, variance $, variance %
+  - Link to detail `/clients/[id]`
+- Summary strip at top: total active clients, % on track, total retainer $, total MTD spend $.
+
+**Client Detail (`/clients/[id]`)**
+- Header with name, AM, retainer, start date, quick health badge
+- Tabs:
+  1) **Overview**: Cumulative spend vs ideal (line chart), donut of MTD burn %, table of recent time entries, variance band explanation
+  2) **Departments**: Bar chart of hours/spend by department MTD; table with deltas vs last month
+  3) **Team**: Roster with department, role, contribution hours/spend MTD; identify heavy contributors
+  4) **History**: 12-month trend (burn % and variance), monthly cards with Over/Under highlights
+
+Skeleton states while loading; empty states for no data.
+
+### Tech Plumbing
+- Project structure: `app/` routes, `components/` for UI parts, `lib/` for domain logic, `db/` for prisma client
+- Use TanStack Query hooks (`useQuery`) calling our `/api/*`
+- Utility formatters: currency (from cents), percent, hours
+- Env: `.env` with:
+  - `DATABASE_URL="file:./dev.db"`
+  - `NEXT_PUBLIC_APP_NAME="BurnBoard"`
+  - `MOCK_MODE="true"`
+  - `WEBHOOK_SECRET="dev_only_placeholder"`
+- Add simple HMAC check middleware on `/api/webhooks/n8n` (if `WEBHOOK_SECRET` provided, accept a header `x-burnboard-signature` = HMAC-SHA256 of raw body). For now, allow pass-through in MOCK_MODE.
+
+### Commands & Scripts
+- `npm run dev` – Next dev
+- `npm run db:push` – prisma db push
+- `npm run db:seed` – prisma seed
+- `npm run lint` – lint
+- `npm run test` – vitest unit tests
+
+### Tests (Vitest)
+- `lib/metrics.test.ts` covering burn %, ideal target, variance, health categorization
+- Basic API tests for `/api/clients` filtering and typing
+
+### Nice-to-haves
+- Toggle view: cards/table
+- Export CSV on dashboard and client detail (current view)
+- Tooltips on charts for exact values
+- Health legend explaining thresholds
+
+### Deliverables
+1) A running Next.js app with seeded SQLite db and fully working UI described above
+2) Clean TypeScript types across API and components
+3) Instructions in README:
+   - how to run dev
+   - how to reseed
+   - where to later connect n8n/Accelo (the two routes above)
+4) Keep code concise, well-commented, and ready to replace mock data with real sync later.
+
+Now scaffold the entire project, install deps, generate shadcn/ui components, set up Prisma schema + seed, create API handlers, domain utilities, and pages. Ensure the dashboard loads with mock data and the charts render without errors.
