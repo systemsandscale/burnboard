@@ -214,6 +214,39 @@ export type DepartmentTimeData = {
   memberCount: number;
 };
 
+export type OverservingClientData = {
+  clientId: string;
+  clientName: string;
+  averageOverservingHours: number;
+  averageOverservingCents: number;
+  accountManager: string;
+};
+
+export type OverservingEmployeeData = {
+  memberId: string;
+  memberName: string;
+  department: string;
+  averageOverservingHours: number;
+  averageOverservingCents: number;
+};
+
+export type DashboardAnalytics = {
+  topOverservingClients: OverservingClientData[];
+  topOverservingEmployees: OverservingEmployeeData[];
+  totalLostRevenueCents: number;
+  hourlyRateCents: number;
+};
+
+// Settings table for app configuration
+export const settings = pgTable("settings", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  key: text("key").notNull().unique(),
+  value: text("value").notNull(),
+  valueType: text("value_type").notNull().default("string"),
+  createdAt: timestamp("created_at").default(sql`now()`),
+  updatedAt: timestamp("updated_at").default(sql`now()`)
+});
+
 // Keep the original user schema for authentication
 export const users = pgTable("users", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -221,10 +254,18 @@ export const users = pgTable("users", {
   password: text("password").notNull(),
 });
 
+export const insertSettingsSchema = createInsertSchema(settings).pick({
+  key: true,
+  value: true,
+  valueType: true,
+});
+
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,
   password: true,
 });
 
+export type InsertSettings = z.infer<typeof insertSettingsSchema>;
+export type Settings = typeof settings.$inferSelect;
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;

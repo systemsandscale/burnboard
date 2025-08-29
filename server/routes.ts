@@ -141,6 +141,66 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Dashboard analytics endpoint
+  app.get("/api/dashboard/analytics", async (req, res) => {
+    try {
+      const analyticsData = await storage.getDashboardAnalytics();
+      res.json(analyticsData);
+    } catch (error) {
+      console.error("Error fetching dashboard analytics:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // Settings endpoints
+  app.get("/api/settings", async (req, res) => {
+    try {
+      const settings = await storage.getSettings();
+      res.json({ settings });
+    } catch (error) {
+      console.error("Error fetching settings:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  app.get("/api/settings/:key", async (req, res) => {
+    try {
+      const { key } = req.params;
+      const setting = await storage.getSetting(key);
+      
+      if (!setting) {
+        return res.status(404).json({ error: "Setting not found" });
+      }
+
+      res.json({ setting });
+    } catch (error) {
+      console.error("Error fetching setting:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  app.post("/api/settings", async (req, res) => {
+    try {
+      const settingSchema = z.object({
+        key: z.string(),
+        value: z.string(),
+        valueType: z.string().optional().default("string")
+      });
+
+      const { key, value, valueType } = settingSchema.parse(req.body);
+      
+      const setting = await storage.setSetting(key, value, valueType);
+      res.json({ setting });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        res.status(400).json({ error: fromZodError(error).message });
+      } else {
+        console.error("Error setting value:", error);
+        res.status(500).json({ error: "Internal server error" });
+      }
+    }
+  });
+
   // N8n webhook stub
   app.post("/api/webhooks/n8n", async (req, res) => {
     try {

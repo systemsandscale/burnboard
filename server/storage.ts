@@ -17,6 +17,11 @@ import {
   type InsertMonthlySummary,
   type ClientWithMetrics,
   type DepartmentTimeData,
+  type OverservingClientData,
+  type OverservingEmployeeData,
+  type DashboardAnalytics,
+  type Settings,
+  type InsertSettings,
   users,
   clients,
   departments,
@@ -24,7 +29,8 @@ import {
   clientTeams,
   timeEntries,
   burnSnapshots,
-  monthlySummaries
+  monthlySummaries,
+  settings
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, gte, lte, desc, sql, inArray } from "drizzle-orm";
@@ -83,6 +89,16 @@ export interface IStorage {
     totalRetainerCents: number;
     mtdSpendCents: number;
   }>;
+  getDashboardAnalytics(): Promise<DashboardAnalytics>;
+  getTopOverservingClients(months?: number): Promise<OverservingClientData[]>;
+  getTopOverservingEmployees(months?: number): Promise<OverservingEmployeeData[]>;
+  calculateLostRevenue(): Promise<number>;
+
+  // Settings methods
+  getSettings(): Promise<Settings[]>;
+  getSetting(key: string): Promise<Settings | undefined>;
+  setSetting(key: string, value: string, valueType?: string): Promise<Settings>;
+  getHourlyRate(): Promise<number>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -465,6 +481,140 @@ export class DatabaseStorage implements IStorage {
       totalRetainerCents,
       mtdSpendCents
     };
+  }
+
+  async getDashboardAnalytics(): Promise<DashboardAnalytics> {
+    const [topOverservingClients, topOverservingEmployees, hourlyRate] = await Promise.all([
+      this.getTopOverservingClients(3),
+      this.getTopOverservingEmployees(3),
+      this.getHourlyRate()
+    ]);
+
+    const totalLostRevenueCents = await this.calculateLostRevenue();
+
+    return {
+      topOverservingClients,
+      topOverservingEmployees,
+      totalLostRevenueCents,
+      hourlyRateCents: hourlyRate * 100
+    };
+  }
+
+  async getTopOverservingClients(months: number = 3): Promise<OverservingClientData[]> {
+    const startDate = new Date();
+    startDate.setMonth(startDate.getMonth() - months);
+
+    const result = await db
+      .select({
+        clientId: clients.id,
+        clientName: clients.name,
+        accountManager: clients.accountManager,
+        totalHours: sql<number>`sum(${timeEntries.hours})::numeric`,
+        totalCostCents: sql<number>`sum(${timeEntries.costCents})::integer`,
+        retainerCents: sql<number>`(${clients.monthlyRetainerAmountCents} * ${months})::integer`
+      })
+      .from(timeEntries)
+      .innerJoin(clients, eq(timeEntries.clientId, clients.id))
+      .where(
+        and(
+          gte(timeEntries.start, startDate),
+          eq(clients.status, "ACTIVE")
+        )
+      )
+      .groupBy(clients.id, clients.name, clients.accountManager, clients.monthlyRetainerAmountCents)
+      .having(sql`sum(${timeEntries.costCents}) > (${clients.monthlyRetainerAmountCents} * ${months})`)
+      .orderBy(sql`(sum(${timeEntries.costCents}) - (${clients.monthlyRetainerAmountCents} * ${months})) DESC`)
+      .limit(5);
+
+    return result.map(row => ({
+      clientId: row.clientId,
+      clientName: row.clientName,
+      accountManager: row.accountManager,
+      averageOverservingHours: (Number(row.totalHours) || 0) / months,
+      averageOverservingCents: (Number(row.totalCostCents) - Number(row.retainerCents)) / months
+    }));
+  }
+
+  async getTopOverservingEmployees(months: number = 3): Promise<OverservingEmployeeData[]> {
+    const startDate = new Date();
+    startDate.setMonth(startDate.getMonth() - months);
+
+    const result = await db
+      .select({
+        memberId: teamMembers.id,
+        memberName: teamMembers.name,
+        departmentName: departments.name,
+        totalHours: sql<number>`sum(${timeEntries.hours})::numeric`,
+        totalCostCents: sql<number>`sum(${timeEntries.costCents})::integer`,
+        avgRetainerUsage: sql<number>`avg(${timeEntries.costCents} / ${clients.monthlyRetainerAmountCents})::numeric`
+      })
+      .from(timeEntries)
+      .innerJoin(teamMembers, eq(timeEntries.memberId, teamMembers.id))
+      .innerJoin(departments, eq(teamMembers.departmentId, departments.id))
+      .innerJoin(clients, eq(timeEntries.clientId, clients.id))
+      .where(
+        and(
+          gte(timeEntries.start, startDate),
+          eq(clients.status, "ACTIVE")
+        )
+      )
+      .groupBy(teamMembers.id, teamMembers.name, departments.name)
+      .having(sql`avg(${timeEntries.costCents} / ${clients.monthlyRetainerAmountCents}) > 0.2`)
+      .orderBy(sql`sum(${timeEntries.costCents}) DESC`)
+      .limit(5);
+
+    return result.map(row => ({
+      memberId: row.memberId,
+      memberName: row.memberName,
+      department: row.departmentName,
+      averageOverservingHours: (Number(row.totalHours) || 0) / months,
+      averageOverservingCents: (Number(row.totalCostCents) || 0) / months
+    }));
+  }
+
+  async calculateLostRevenue(): Promise<number> {
+    const hourlyRate = await this.getHourlyRate();
+    const overservingClients = await this.getTopOverservingClients(1); // Last month
+
+    const totalOverservingCents = overservingClients.reduce((sum, client) => {
+      return sum + Math.max(0, client.averageOverservingCents);
+    }, 0);
+
+    return totalOverservingCents;
+  }
+
+  // Settings methods
+  async getSettings(): Promise<Settings[]> {
+    return await db.select().from(settings);
+  }
+
+  async getSetting(key: string): Promise<Settings | undefined> {
+    const [setting] = await db.select().from(settings).where(eq(settings.key, key));
+    return setting || undefined;
+  }
+
+  async setSetting(key: string, value: string, valueType: string = "string"): Promise<Settings> {
+    const existing = await this.getSetting(key);
+    
+    if (existing) {
+      const [updated] = await db
+        .update(settings)
+        .set({ value, valueType, updatedAt: sql`now()` })
+        .where(eq(settings.key, key))
+        .returning();
+      return updated;
+    } else {
+      const [created] = await db
+        .insert(settings)
+        .values({ key, value, valueType })
+        .returning();
+      return created;
+    }
+  }
+
+  async getHourlyRate(): Promise<number> {
+    const setting = await this.getSetting("hourly_rate");
+    return setting ? parseFloat(setting.value) : 150; // Default $150/hour
   }
 }
 

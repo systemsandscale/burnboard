@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Header } from "@/components/layout/header";
 import { SummaryStats } from "@/components/dashboard/summary-stats";
+import { AnalyticsSummary } from "@/components/dashboard/analytics-summary";
 import { Filters } from "@/components/dashboard/filters";
 import { ClientGrid } from "@/components/dashboard/client-grid";
 import { ClientTable } from "@/components/dashboard/client-table";
@@ -18,6 +19,11 @@ export default function Dashboard() {
   // Fetch dashboard summary
   const { data: summaryData, isLoading: summaryLoading } = useQuery({
     queryKey: ["/api/dashboard/summary"]
+  });
+
+  // Fetch dashboard analytics
+  const { data: analyticsData, isLoading: analyticsLoading } = useQuery({
+    queryKey: ["/api/dashboard/analytics"]
   });
 
   // Fetch clients with filters
@@ -52,6 +58,11 @@ export default function Dashboard() {
         <SummaryStats 
           data={summaryData as any}
           isLoading={summaryLoading}
+        />
+
+        <AnalyticsSummary 
+          data={analyticsData as any}
+          isLoading={analyticsLoading}
         />
         
         <Filters

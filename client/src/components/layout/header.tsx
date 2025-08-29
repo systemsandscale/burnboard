@@ -3,7 +3,8 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useTheme } from "@/components/ui/theme-provider";
-import { Search, Moon, Sun, ChartLine } from "lucide-react";
+import { SettingsModal } from "@/components/settings/settings-modal";
+import { Search, Moon, Sun, ChartLine, Settings } from "lucide-react";
 
 interface HeaderProps {
   searchQuery: string;
@@ -12,6 +13,7 @@ interface HeaderProps {
 
 export function Header({ searchQuery, onSearchChange }: HeaderProps) {
   const { theme, setTheme } = useTheme();
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const toggleTheme = () => {
     setTheme(theme === "light" ? "dark" : "light");
@@ -46,6 +48,15 @@ export function Header({ searchQuery, onSearchChange }: HeaderProps) {
             <Button
               variant="ghost"
               size="sm"
+              onClick={() => setSettingsOpen(true)}
+              data-testid="button-settings"
+            >
+              <Settings className="h-4 w-4" />
+            </Button>
+
+            <Button
+              variant="ghost"
+              size="sm"
               onClick={toggleTheme}
               data-testid="button-theme-toggle"
             >
@@ -62,6 +73,11 @@ export function Header({ searchQuery, onSearchChange }: HeaderProps) {
           </div>
         </div>
       </div>
+
+      <SettingsModal 
+        open={settingsOpen} 
+        onOpenChange={setSettingsOpen} 
+      />
     </header>
   );
 }
