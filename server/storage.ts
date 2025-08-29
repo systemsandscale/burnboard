@@ -1,5 +1,5 @@
-import { 
-  type User, 
+import {
+  type User,
   type InsertUser,
   type Client,
   type InsertClient,
@@ -30,10 +30,13 @@ import {
   timeEntries,
   burnSnapshots,
   monthlySummaries,
-  settings
+  settings,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, gte, lte, desc, sql, inArray } from "drizzle-orm";
+import { db } from "./db";
+import { clients, burnSnapshots } from "@shared/schema";
+import { eq, and } from "drizzle-orm";
 
 export interface IStorage {
   // User methods
@@ -74,7 +77,11 @@ export interface IStorage {
   createTimeEntry(timeEntry: InsertTimeEntry): Promise<TimeEntry>;
 
   // Burn snapshot methods
-  getBurnSnapshots(clientId: string, startDate?: Date, endDate?: Date): Promise<BurnSnapshot[]>;
+  getBurnSnapshots(
+    clientId: string,
+    startDate?: Date,
+    endDate?: Date,
+  ): Promise<BurnSnapshot[]>;
   createBurnSnapshot(snapshot: InsertBurnSnapshot): Promise<BurnSnapshot>;
 
   // Monthly summary methods
@@ -82,7 +89,10 @@ export interface IStorage {
   createMonthlySummary(summary: InsertMonthlySummary): Promise<MonthlySummary>;
 
   // Analytics methods
-  getClientTimeByDepartment(clientId: string, month?: string): Promise<DepartmentTimeData[]>;
+  getClientTimeByDepartment(
+    clientId: string,
+    month?: string,
+  ): Promise<DepartmentTimeData[]>;
   getDashboardSummary(): Promise<{
     activeClients: number;
     onTrackPercentage: number;
@@ -91,7 +101,9 @@ export interface IStorage {
   }>;
   getDashboardAnalytics(): Promise<DashboardAnalytics>;
   getTopOverservingClients(months?: number): Promise<OverservingClientData[]>;
-  getTopOverservingEmployees(months?: number): Promise<OverservingEmployeeData[]>;
+  getTopOverservingEmployees(
+    months?: number,
+  ): Promise<OverservingEmployeeData[]>;
   calculateLostRevenue(): Promise<number>;
 
   // Settings methods
@@ -108,15 +120,15 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getUserByUsername(username: string): Promise<User | undefined> {
-    const [user] = await db.select().from(users).where(eq(users.username, username));
+    const [user] = await db
+      .select()
+      .from(users)
+      .where(eq(users.username, username));
     return user || undefined;
   }
 
   async createUser(insertUser: InsertUser): Promise<User> {
-    const [user] = await db
-      .insert(users)
-      .values(insertUser)
-      .returning();
+    const [user] = await db.insert(users).values(insertUser).returning();
     return user;
   }
 
@@ -128,21 +140,21 @@ export class DatabaseStorage implements IStorage {
     search?: string;
   }): Promise<ClientWithMetrics[]> {
     let query = db.select().from(clients);
-    
+
     const conditions = [];
-    
+
     if (filters?.status) {
       conditions.push(eq(clients.status, filters.status));
     }
-    
+
     if (filters?.accountManager) {
       conditions.push(eq(clients.accountManager, filters.accountManager));
     }
-    
+
     if (filters?.search) {
-      conditions.push(sql`${clients.name} ILIKE ${'%' + filters.search + '%'}`);
+      conditions.push(sql`${clients.name} ILIKE ${"%" + filters.search + "%"}`);
     }
-    
+
     if (conditions.length > 0) {
       query = query.where(and(...conditions));
     }
@@ -164,30 +176,37 @@ export class DatabaseStorage implements IStorage {
           and(
             eq(timeEntries.clientId, client.id),
             gte(timeEntries.start, startOfMonth),
-            lte(timeEntries.start, endOfMonth)
-          )
+            lte(timeEntries.start, endOfMonth),
+          ),
         );
 
-      const mtdSpendCents = mtdEntries.reduce((sum, entry) => sum + entry.costCents, 0);
+      const mtdSpendCents = mtdEntries.reduce(
+        (sum, entry) => sum + entry.costCents,
+        0,
+      );
       const mtdHours = mtdEntries.reduce((sum, entry) => sum + entry.hours, 0);
-      
+
       // Calculate burn metrics using domain logic that would be in lib/metrics.ts
       const daysInMonth = endOfMonth.getDate();
       const dayOfMonth = now.getDate();
       const idealTargetSpendToDateCents = Math.round(
-        (client.monthlyRetainerAmountCents * dayOfMonth) / daysInMonth
+        (client.monthlyRetainerAmountCents * dayOfMonth) / daysInMonth,
       );
-      
-      const burnPctMTD = client.monthlyRetainerAmountCents > 0 ? 
-        mtdSpendCents / client.monthlyRetainerAmountCents : 0;
-      
+
+      const burnPctMTD =
+        client.monthlyRetainerAmountCents > 0
+          ? mtdSpendCents / client.monthlyRetainerAmountCents
+          : 0;
+
       const varianceCents = mtdSpendCents - idealTargetSpendToDateCents;
-      const variancePct = idealTargetSpendToDateCents > 0 ? 
-        (mtdSpendCents / idealTargetSpendToDateCents) - 1 : 0;
-      
+      const variancePct =
+        idealTargetSpendToDateCents > 0
+          ? mtdSpendCents / idealTargetSpendToDateCents - 1
+          : 0;
+
       let health: "OVER" | "ON_TRACK" | "UNDER" = "ON_TRACK";
-      if (burnPctMTD > 1.10) health = "OVER";
-      else if (burnPctMTD < 0.90) health = "UNDER";
+      if (burnPctMTD > 1.1) health = "OVER";
+      else if (burnPctMTD < 0.9) health = "UNDER";
 
       // Apply health filter if specified
       if (filters?.health && health !== filters.health) {
@@ -200,11 +219,11 @@ export class DatabaseStorage implements IStorage {
           .select()
           .from(departments)
           .where(eq(departments.name, filters.department));
-        
+
         if (departmentQuery.length === 0) {
           continue; // Department doesn't exist
         }
-        
+
         const departmentId = departmentQuery[0].id;
         const hasTimeInDepartment = await db
           .select()
@@ -212,11 +231,11 @@ export class DatabaseStorage implements IStorage {
           .where(
             and(
               eq(timeEntries.clientId, client.id),
-              eq(timeEntries.departmentId, departmentId)
-            )
+              eq(timeEntries.departmentId, departmentId),
+            ),
           )
           .limit(1);
-          
+
         if (hasTimeInDepartment.length === 0) {
           continue; // Client has no time entries in this department
         }
@@ -230,7 +249,7 @@ export class DatabaseStorage implements IStorage {
         idealTargetSpendToDateCents,
         varianceCents,
         variancePct,
-        health
+        health,
       });
     }
 
@@ -243,10 +262,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createClient(insertClient: InsertClient): Promise<Client> {
-    const [client] = await db
-      .insert(clients)
-      .values(insertClient)
-      .returning();
+    const [client] = await db.insert(clients).values(insertClient).returning();
     return client;
   }
 
@@ -254,7 +270,9 @@ export class DatabaseStorage implements IStorage {
     return await db.select().from(departments);
   }
 
-  async createDepartment(insertDepartment: InsertDepartment): Promise<Department> {
+  async createDepartment(
+    insertDepartment: InsertDepartment,
+  ): Promise<Department> {
     const [department] = await db
       .insert(departments)
       .values(insertDepartment)
@@ -272,8 +290,8 @@ export class DatabaseStorage implements IStorage {
       .from(teamMembers)
       .innerJoin(clientTeams, eq(clientTeams.memberId, teamMembers.id))
       .where(eq(clientTeams.clientId, clientId));
-    
-    return result.map(row => row.teamMember);
+
+    return result.map((row) => row.teamMember);
   }
 
   async createTeamMember(insertMember: InsertTeamMember): Promise<TeamMember> {
@@ -286,15 +304,17 @@ export class DatabaseStorage implements IStorage {
 
   async getClientTeams(clientId?: string): Promise<ClientTeam[]> {
     let query = db.select().from(clientTeams);
-    
+
     if (clientId) {
       query = query.where(eq(clientTeams.clientId, clientId));
     }
-    
+
     return await query;
   }
 
-  async createClientTeam(insertClientTeam: InsertClientTeam): Promise<ClientTeam> {
+  async createClientTeam(
+    insertClientTeam: InsertClientTeam,
+  ): Promise<ClientTeam> {
     const [clientTeam] = await db
       .insert(clientTeams)
       .values(insertClientTeam)
@@ -308,25 +328,25 @@ export class DatabaseStorage implements IStorage {
     endDate?: Date;
   }): Promise<TimeEntry[]> {
     let query = db.select().from(timeEntries);
-    
+
     const conditions = [];
-    
+
     if (filters?.clientId) {
       conditions.push(eq(timeEntries.clientId, filters.clientId));
     }
-    
+
     if (filters?.startDate) {
       conditions.push(gte(timeEntries.start, filters.startDate));
     }
-    
+
     if (filters?.endDate) {
       conditions.push(lte(timeEntries.start, filters.endDate));
     }
-    
+
     if (conditions.length > 0) {
       query = query.where(and(...conditions));
     }
-    
+
     return await query.orderBy(desc(timeEntries.start));
   }
 
@@ -338,22 +358,30 @@ export class DatabaseStorage implements IStorage {
     return timeEntry;
   }
 
-  async getBurnSnapshots(clientId: string, startDate?: Date, endDate?: Date): Promise<BurnSnapshot[]> {
+  async getBurnSnapshots(
+    clientId: string,
+    startDate?: Date,
+    endDate?: Date,
+  ): Promise<BurnSnapshot[]> {
     let query = db
       .select()
       .from(burnSnapshots)
       .where(eq(burnSnapshots.clientId, clientId));
-    
+
     const conditions = [eq(burnSnapshots.clientId, clientId)];
-    
+
     if (startDate) {
-      conditions.push(gte(burnSnapshots.date, startDate.toISOString().split('T')[0]));
+      conditions.push(
+        gte(burnSnapshots.date, startDate.toISOString().split("T")[0]),
+      );
     }
-    
+
     if (endDate) {
-      conditions.push(lte(burnSnapshots.date, endDate.toISOString().split('T')[0]));
+      conditions.push(
+        lte(burnSnapshots.date, endDate.toISOString().split("T")[0]),
+      );
     }
-    
+
     return await db
       .select()
       .from(burnSnapshots)
@@ -361,7 +389,9 @@ export class DatabaseStorage implements IStorage {
       .orderBy(burnSnapshots.date);
   }
 
-  async createBurnSnapshot(insertSnapshot: InsertBurnSnapshot): Promise<BurnSnapshot> {
+  async createBurnSnapshot(
+    insertSnapshot: InsertBurnSnapshot,
+  ): Promise<BurnSnapshot> {
     const [snapshot] = await db
       .insert(burnSnapshots)
       .values(insertSnapshot)
@@ -377,7 +407,9 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(monthlySummaries.year), desc(monthlySummaries.month));
   }
 
-  async createMonthlySummary(insertSummary: InsertMonthlySummary): Promise<MonthlySummary> {
+  async createMonthlySummary(
+    insertSummary: InsertMonthlySummary,
+  ): Promise<MonthlySummary> {
     const [summary] = await db
       .insert(monthlySummaries)
       .values(insertSummary)
@@ -385,12 +417,15 @@ export class DatabaseStorage implements IStorage {
     return summary;
   }
 
-  async getClientTimeByDepartment(clientId: string, month?: string): Promise<DepartmentTimeData[]> {
+  async getClientTimeByDepartment(
+    clientId: string,
+    month?: string,
+  ): Promise<DepartmentTimeData[]> {
     let startDate: Date;
     let endDate: Date;
-    
+
     if (month) {
-      const [year, monthNum] = month.split('-').map(Number);
+      const [year, monthNum] = month.split("-").map(Number);
       startDate = new Date(year, monthNum - 1, 1);
       endDate = new Date(year, monthNum, 0);
     } else {
@@ -405,7 +440,7 @@ export class DatabaseStorage implements IStorage {
         departmentName: departments.name,
         totalHours: sql<number>`sum(${timeEntries.hours})::numeric`,
         totalCostCents: sql<number>`sum(${timeEntries.costCents})::integer`,
-        memberCount: sql<number>`count(distinct ${timeEntries.memberId})::integer`
+        memberCount: sql<number>`count(distinct ${timeEntries.memberId})::integer`,
       })
       .from(timeEntries)
       .innerJoin(departments, eq(timeEntries.departmentId, departments.id))
@@ -413,17 +448,17 @@ export class DatabaseStorage implements IStorage {
         and(
           eq(timeEntries.clientId, clientId),
           gte(timeEntries.start, startDate),
-          lte(timeEntries.start, endDate)
-        )
+          lte(timeEntries.start, endDate),
+        ),
       )
       .groupBy(departments.id, departments.name);
 
-    return result.map(row => ({
+    return result.map((row) => ({
       departmentId: row.departmentId,
       departmentName: row.departmentName,
       hours: Number(row.totalHours) || 0,
       spendCents: Number(row.totalCostCents) || 0,
-      memberCount: Number(row.memberCount) || 0
+      memberCount: Number(row.memberCount) || 0,
     }));
   }
 
@@ -441,8 +476,8 @@ export class DatabaseStorage implements IStorage {
     const activeClients = Number(activeClientsResult[0]?.count) || 0;
 
     const totalRetainerResult = await db
-      .select({ 
-        total: sql<number>`sum(${clients.monthlyRetainerAmountCents})::bigint` 
+      .select({
+        total: sql<number>`sum(${clients.monthlyRetainerAmountCents})::bigint`,
       })
       .from(clients)
       .where(eq(clients.status, "ACTIVE"));
@@ -455,8 +490,8 @@ export class DatabaseStorage implements IStorage {
     const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
 
     const mtdSpendResult = await db
-      .select({ 
-        total: sql<number>`sum(${timeEntries.costCents})::bigint` 
+      .select({
+        total: sql<number>`sum(${timeEntries.costCents})::bigint`,
       })
       .from(timeEntries)
       .innerJoin(clients, eq(timeEntries.clientId, clients.id))
@@ -464,31 +499,35 @@ export class DatabaseStorage implements IStorage {
         and(
           eq(clients.status, "ACTIVE"),
           gte(timeEntries.start, startOfMonth),
-          lte(timeEntries.start, endOfMonth)
-        )
+          lte(timeEntries.start, endOfMonth),
+        ),
       );
 
     const mtdSpendCents = Number(mtdSpendResult[0]?.total) || 0;
 
     // Calculate on-track percentage (simplified)
     const clientsWithMetrics = await this.getClients({ status: "ACTIVE" });
-    const onTrackCount = clientsWithMetrics.filter(c => c.health === "ON_TRACK").length;
-    const onTrackPercentage = activeClients > 0 ? Math.round((onTrackCount / activeClients) * 100) : 0;
+    const onTrackCount = clientsWithMetrics.filter(
+      (c) => c.health === "ON_TRACK",
+    ).length;
+    const onTrackPercentage =
+      activeClients > 0 ? Math.round((onTrackCount / activeClients) * 100) : 0;
 
     return {
       activeClients,
       onTrackPercentage,
       totalRetainerCents,
-      mtdSpendCents
+      mtdSpendCents,
     };
   }
 
   async getDashboardAnalytics(): Promise<DashboardAnalytics> {
-    const [topOverservingClients, topOverservingEmployees, hourlyRate] = await Promise.all([
-      this.getTopOverservingClients(3),
-      this.getTopOverservingEmployees(3),
-      this.getHourlyRate()
-    ]);
+    const [topOverservingClients, topOverservingEmployees, hourlyRate] =
+      await Promise.all([
+        this.getTopOverservingClients(3),
+        this.getTopOverservingEmployees(3),
+        this.getHourlyRate(),
+      ]);
 
     const totalLostRevenueCents = await this.calculateLostRevenue();
 
@@ -496,11 +535,13 @@ export class DatabaseStorage implements IStorage {
       topOverservingClients,
       topOverservingEmployees,
       totalLostRevenueCents,
-      hourlyRateCents: hourlyRate * 100
+      hourlyRateCents: hourlyRate * 100,
     };
   }
 
-  async getTopOverservingClients(months: number = 3): Promise<OverservingClientData[]> {
+  async getTopOverservingClients(
+    months: number = 3,
+  ): Promise<OverservingClientData[]> {
     const startDate = new Date();
     startDate.setMonth(startDate.getMonth() - months);
 
@@ -511,41 +552,52 @@ export class DatabaseStorage implements IStorage {
         accountManager: clients.accountManager,
         totalHours: sql<number>`sum(${timeEntries.hours})::numeric`,
         totalCostCents: sql<number>`sum(${timeEntries.costCents})::integer`,
-        retainerCents: sql<number>`(${clients.monthlyRetainerAmountCents} * ${months})::integer`
+        retainerCents: sql<number>`(${clients.monthlyRetainerAmountCents} * ${months})::integer`,
       })
       .from(timeEntries)
       .innerJoin(clients, eq(timeEntries.clientId, clients.id))
       .where(
-        and(
-          gte(timeEntries.start, startDate),
-          eq(clients.status, "ACTIVE")
-        )
+        and(gte(timeEntries.start, startDate), eq(clients.status, "ACTIVE")),
       )
-      .groupBy(clients.id, clients.name, clients.accountManager, clients.monthlyRetainerAmountCents)
-      .having(sql`sum(${timeEntries.costCents}) > (${clients.monthlyRetainerAmountCents} * ${months})`)
-      .orderBy(sql`(sum(${timeEntries.costCents}) - (${clients.monthlyRetainerAmountCents} * ${months})) DESC`)
+      .groupBy(
+        clients.id,
+        clients.name,
+        clients.accountManager,
+        clients.monthlyRetainerAmountCents,
+      )
+      .having(
+        sql`sum(${timeEntries.costCents}) > (${clients.monthlyRetainerAmountCents} * ${months})`,
+      )
+      .orderBy(
+        sql`(sum(${timeEntries.costCents}) - (${clients.monthlyRetainerAmountCents} * ${months})) DESC`,
+      )
       .limit(5);
 
-    return result.map(row => {
+    return result.map((row) => {
       const totalCostCents = Number(row.totalCostCents) || 0;
       const retainerCents = Number(row.retainerCents) || 0;
       const totalHours = Number(row.totalHours) || 0;
-      
+
       // Calculate overserving hours based on the ratio of overserving cost to total cost
       const overservingCents = Math.max(0, totalCostCents - retainerCents);
-      const overservingHours = totalCostCents > 0 ? (overservingCents / totalCostCents) * totalHours : 0;
-      
+      const overservingHours =
+        totalCostCents > 0
+          ? (overservingCents / totalCostCents) * totalHours
+          : 0;
+
       return {
         clientId: row.clientId,
         clientName: row.clientName,
         accountManager: row.accountManager,
         averageOverservingHours: overservingHours / months,
-        averageOverservingCents: overservingCents / months
+        averageOverservingCents: overservingCents / months,
       };
     });
   }
 
-  async getTopOverservingEmployees(months: number = 3): Promise<OverservingEmployeeData[]> {
+  async getTopOverservingEmployees(
+    months: number = 3,
+  ): Promise<OverservingEmployeeData[]> {
     const startDate = new Date();
     startDate.setMonth(startDate.getMonth() - months);
 
@@ -556,39 +608,38 @@ export class DatabaseStorage implements IStorage {
         departmentName: departments.name,
         totalHours: sql<number>`sum(${timeEntries.hours})::numeric`,
         totalCostCents: sql<number>`sum(${timeEntries.costCents})::integer`,
-        avgRetainerUsage: sql<number>`avg(${timeEntries.costCents} / ${clients.monthlyRetainerAmountCents})::numeric`
+        avgRetainerUsage: sql<number>`avg(${timeEntries.costCents} / ${clients.monthlyRetainerAmountCents})::numeric`,
       })
       .from(timeEntries)
       .innerJoin(teamMembers, eq(timeEntries.memberId, teamMembers.id))
       .innerJoin(departments, eq(teamMembers.departmentId, departments.id))
       .innerJoin(clients, eq(timeEntries.clientId, clients.id))
       .where(
-        and(
-          gte(timeEntries.start, startDate),
-          eq(clients.status, "ACTIVE")
-        )
+        and(gte(timeEntries.start, startDate), eq(clients.status, "ACTIVE")),
       )
       .groupBy(teamMembers.id, teamMembers.name, departments.name)
-      .having(sql`avg(${timeEntries.costCents} / ${clients.monthlyRetainerAmountCents}) > 0.2`)
+      .having(
+        sql`avg(${timeEntries.costCents} / ${clients.monthlyRetainerAmountCents}) > 0.2`,
+      )
       .orderBy(sql`sum(${timeEntries.costCents}) DESC`)
       .limit(5);
 
-    return result.map(row => {
+    return result.map((row) => {
       const totalCostCents = Number(row.totalCostCents) || 0;
       const totalHours = Number(row.totalHours) || 0;
       const avgRetainerUsage = Number(row.avgRetainerUsage) || 0;
-      
+
       // Calculate overserving hours based on usage above baseline (20% threshold)
       const baselineUsage = 0.2; // 20% baseline
       const overservingRatio = Math.max(0, avgRetainerUsage - baselineUsage);
       const overservingHours = overservingRatio * totalHours;
-      
+
       return {
         memberId: row.memberId,
         memberName: row.memberName,
         department: row.departmentName,
         averageOverservingHours: overservingHours / months,
-        averageOverservingCents: totalCostCents / months
+        averageOverservingCents: totalCostCents / months,
       };
     });
   }
@@ -603,16 +654,22 @@ export class DatabaseStorage implements IStorage {
       return sum + Math.max(0, client.averageOverservingHours);
     }, 0);
 
-    const employeeOverservingHours = overservingEmployees.reduce((sum, employee) => {
-      return sum + Math.max(0, employee.averageOverservingHours);
-    }, 0);
+    const employeeOverservingHours = overservingEmployees.reduce(
+      (sum, employee) => {
+        return sum + Math.max(0, employee.averageOverservingHours);
+      },
+      0,
+    );
 
     // Use the maximum of client or employee overserving to avoid double counting
-    const totalOverservingHours = Math.max(clientOverservingHours, employeeOverservingHours);
-    
+    const totalOverservingHours = Math.max(
+      clientOverservingHours,
+      employeeOverservingHours,
+    );
+
     // Convert hourly rate to cents and multiply by overserving hours
     const lostRevenueCents = totalOverservingHours * (hourlyRate * 100);
-    
+
     return lostRevenueCents;
   }
 
@@ -622,13 +679,20 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getSetting(key: string): Promise<Settings | undefined> {
-    const [setting] = await db.select().from(settings).where(eq(settings.key, key));
+    const [setting] = await db
+      .select()
+      .from(settings)
+      .where(eq(settings.key, key));
     return setting || undefined;
   }
 
-  async setSetting(key: string, value: string, valueType: string = "string"): Promise<Settings> {
+  async setSetting(
+    key: string,
+    value: string,
+    valueType: string = "string",
+  ): Promise<Settings> {
     const existing = await this.getSetting(key);
-    
+
     if (existing) {
       const [updated] = await db
         .update(settings)
@@ -652,3 +716,50 @@ export class DatabaseStorage implements IStorage {
 }
 
 export const storage = new DatabaseStorage();
+// get by acceloId
+export async function getClientByAcceloId(acceloId: string) {
+  const rows = await db
+    .select()
+    .from(clients)
+    .where(eq(clients.acceloId, acceloId))
+    .limit(1);
+  return rows[0] || null;
+}
+
+export async function upsertClient(insertClient: any) {
+  const [row] = await db
+    .insert(clients)
+    .values(insertClient)
+    .onConflictDoUpdate({
+      target: clients.acceloId,
+      set: {
+        name: insertClient.name,
+        status: insertClient.status ?? "ACTIVE",
+        startDate: new Date(insertClient.startDate ?? new Date()),
+        monthlyRetainerAmountCents:
+          insertClient.monthlyRetainerAmountCents ?? 0,
+        plannedHours: insertClient.plannedHours ?? null,
+        hourlyBlendedRateCents: insertClient.hourlyBlendedRateCents ?? null,
+        accountManager: insertClient.accountManager ?? "",
+        updatedAt: new Date(),
+      },
+    })
+    .returning();
+  return row;
+}
+
+export async function upsertBurnSnapshot(insertSnap: any) {
+  const [row] = await db
+    .insert(burnSnapshots)
+    .values(insertSnap)
+    .onConflictDoUpdate({
+      target: [burnSnapshots.clientId, burnSnapshots.date],
+      set: {
+        spendToDateCents: insertSnap.spendToDateCents,
+        hoursToDate: insertSnap.hoursToDate,
+        targetSpendToDateCents: insertSnap.targetSpendToDateCents ?? 0,
+      },
+    })
+    .returning();
+  return row;
+}

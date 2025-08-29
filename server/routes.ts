@@ -202,14 +202,71 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // N8n webhook stub
+  import { z } from "zod";
+  import { fromZodError } from "zod-validation-error";
+  import * as storage from "./storage"; // adjust import to your project
+  import {
+    clients as clientsTable,
+    burnSnapshots as burnSnapshotsTable,
+    // types from shared schema (adjust paths as needed)
+    type InsertClient,
+    type InsertBurnSnapshot,
+  } from "@shared/schema";
+
+  // minimal schema for current posts
+  const timeEntrySchema = z.object({
+    type: z.literal("time_entry"),
+    data: z.object({
+      clientId: z.string().min(1),           // Accelo company id (string)
+      periodId: z.string().optional(),
+      date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), // YYYY-MM-DD
+      spendToDateCents: z.number().int().nonnegative(),
+      hoursToDate: z.number().nonnegative(),
+      targetSpendToDateCents: z.number().int().nonnegative().nullable().optional(),
+    }),
+  });
+
   app.post("/api/webhooks/n8n", async (req, res) => {
     try {
-      const webhookSchema = z.object({
-        type: z.enum(["time_entry", "project_update"]),
-        data: z.any()
-      });
+      const body = timeEntrySchema.parse(req.body);
+      const d = body.data;
 
-      const payload = webhookSchema.parse(req.body);
+      // 1) ensure client exists (acceloId = clientId)
+      const acceloId = d.clientId;
+      const existing = await storage.getClientByAcceloId?.(acceloId);
+      if (!existing) {
+        const insertClient: InsertClient = {
+          acceloId,
+          name: `Client ${acceloId}`,     // placeholder; we can upsert real names later
+          status: "ACTIVE",
+          startDate: new Date(),          // placeholder
+          monthlyRetainerAmountCents: d.targetSpendToDateCents ?? 0, // placeholder
+          plannedHours: null,
+          hourlyBlendedRateCents: null,
+          accountManager: "",
+        };
+        await storage.upsertClient(insertClient);
+      }
+
+      // 2) upsert the daily burn snapshot for this client/date
+      const snap: InsertBurnSnapshot = {
+        clientId: acceloId,
+        date: new Date(d.date),
+        spendToDateCents: d.spendToDateCents,
+        hoursToDate: d.hoursToDate,
+        targetSpendToDateCents: d.targetSpendToDateCents ?? 0,
+      };
+      await storage.upsertBurnSnapshot(snap);
+
+      return res.json({ success: true, saved: true });
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        return res.status(400).json({ error: fromZodError(err).message });
+      }
+      console.error("webhook error:", err);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  });
       
       // TODO: Process Accelo-shaped payloads and upsert records
       console.log("N8n webhook received:", payload);
