@@ -3,6 +3,7 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
+import type { InsertClient, InsertBurnSnapshot } from "@shared/schema";
 
 export async function registerRoutes(app: Express): Promise<Server> {
   
@@ -202,16 +203,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // N8n webhook stub
-  import { z } from "zod";
-  import { fromZodError } from "zod-validation-error";
-  import * as storage from "./storage"; // adjust import to your project
-  import {
-    clients as clientsTable,
-    burnSnapshots as burnSnapshotsTable,
-    // types from shared schema (adjust paths as needed)
-    type InsertClient,
-    type InsertBurnSnapshot,
-  } from "@shared/schema";
 
   // minimal schema for current posts
   const timeEntrySchema = z.object({
@@ -233,30 +224,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // 1) ensure client exists (acceloId = clientId)
       const acceloId = d.clientId;
-      const existing = await storage.getClientByAcceloId?.(acceloId);
+      // Find existing clients and check if one matches the acceloId
+      const allClients = await storage.getClients();
+      const existing = allClients.find(client => client.acceloId === acceloId);
+      
       if (!existing) {
         const insertClient: InsertClient = {
           acceloId,
           name: `Client ${acceloId}`,     // placeholder; we can upsert real names later
           status: "ACTIVE",
-          startDate: new Date(),          // placeholder
+          startDate: d.date,              // Use string date format (YYYY-MM-DD)
           monthlyRetainerAmountCents: d.targetSpendToDateCents ?? 0, // placeholder
           plannedHours: null,
           hourlyBlendedRateCents: null,
           accountManager: "",
         };
-        await storage.upsertClient(insertClient);
+        await storage.createClient(insertClient);
       }
 
-      // 2) upsert the daily burn snapshot for this client/date
+      // 2) create the daily burn snapshot for this client/date
+      // Use the existing client ID or the acceloId as clientId reference
+      const clientId = existing?.id ?? acceloId;
       const snap: InsertBurnSnapshot = {
-        clientId: acceloId,
-        date: new Date(d.date),
+        clientId: clientId,
+        date: d.date,                     // Use string date format (YYYY-MM-DD)
         spendToDateCents: d.spendToDateCents,
         hoursToDate: d.hoursToDate,
         targetSpendToDateCents: d.targetSpendToDateCents ?? 0,
       };
-      await storage.upsertBurnSnapshot(snap);
+      await storage.createBurnSnapshot(snap);
 
       return res.json({ success: true, saved: true });
     } catch (err) {
@@ -265,20 +261,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       console.error("webhook error:", err);
       return res.status(500).json({ error: "Internal server error" });
-    }
-  });
-      
-      // TODO: Process Accelo-shaped payloads and upsert records
-      console.log("N8n webhook received:", payload);
-      
-      res.status(200).json({ success: true, message: "Webhook processed" });
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        res.status(400).json({ error: fromZodError(error).message });
-      } else {
-        console.error("Error processing webhook:", error);
-        res.status(500).json({ error: "Internal server error" });
-      }
     }
   });
 
