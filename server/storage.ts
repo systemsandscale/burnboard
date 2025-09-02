@@ -1,3 +1,4 @@
+// server/storage.ts
 import {
   type User,
   type InsertUser,
@@ -21,7 +22,6 @@ import {
   type OverservingEmployeeData,
   type DashboardAnalytics,
   type Settings,
-  type InsertSettings,
   users,
   clients,
   departments,
@@ -33,10 +33,7 @@ import {
   settings,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, gte, lte, desc, sql, inArray } from "drizzle-orm";
-import { db } from "./db";
-import { clients, burnSnapshots } from "@shared/schema";
-import { eq, and } from "drizzle-orm";
+import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
 
 export interface IStorage {
   // User methods
@@ -114,6 +111,7 @@ export interface IStorage {
 }
 
 export class DatabaseStorage implements IStorage {
+  // ---------- Users ----------
   async getUser(id: string): Promise<User | undefined> {
     const [user] = await db.select().from(users).where(eq(users.id, id));
     return user || undefined;
@@ -132,6 +130,7 @@ export class DatabaseStorage implements IStorage {
     return user;
   }
 
+  // ---------- Clients ----------
   async getClients(filters?: {
     status?: "ACTIVE" | "INACTIVE";
     accountManager?: string;
@@ -139,63 +138,59 @@ export class DatabaseStorage implements IStorage {
     department?: string;
     search?: string;
   }): Promise<ClientWithMetrics[]> {
-    let query = db.select().from(clients);
+    const where: any[] = [];
 
-    const conditions = [];
+    // Default to ACTIVE if no explicit filter
+    const status = (filters?.status ?? "ACTIVE") as "ACTIVE" | "INACTIVE";
+    if (status) where.push(eq(clients.status, status));
+    if (filters?.accountManager)
+      where.push(eq(clients.accountManager, filters.accountManager));
+    if (filters?.search)
+      where.push(sql`${clients.name} ILIKE ${"%" + filters.search + "%"}`);
 
-    if (filters?.status) {
-      conditions.push(eq(clients.status, filters.status));
-    }
+    const baseQuery =
+      where.length > 0
+        ? db
+            .select()
+            .from(clients)
+            .where(and(...where))
+        : db.select().from(clients);
 
-    if (filters?.accountManager) {
-      conditions.push(eq(clients.accountManager, filters.accountManager));
-    }
+    const clientList = await baseQuery.orderBy(clients.name);
 
-    if (filters?.search) {
-      conditions.push(sql`${clients.name} ILIKE ${"%" + filters.search + "%"}`);
-    }
-
-    if (conditions.length > 0) {
-      query = query.where(and(...conditions));
-    }
-
-    const clientList = await query;
-
-    // Calculate metrics for each client
-    const clientsWithMetrics: ClientWithMetrics[] = [];
+    // Compute simple metrics from timeEntries (later we can switch to burnSnapshots)
     const now = new Date();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
 
-    for (const client of clientList) {
-      // Get MTD time entries
+    const result: ClientWithMetrics[] = [];
+    for (const c of clientList) {
       const mtdEntries = await db
         .select()
         .from(timeEntries)
         .where(
           and(
-            eq(timeEntries.clientId, client.id),
+            eq(timeEntries.clientId, c.id),
             gte(timeEntries.start, startOfMonth),
             lte(timeEntries.start, endOfMonth),
           ),
         );
 
       const mtdSpendCents = mtdEntries.reduce(
-        (sum, entry) => sum + entry.costCents,
+        (sum, e) => sum + (e.costCents ?? 0),
         0,
       );
-      const mtdHours = mtdEntries.reduce((sum, entry) => sum + entry.hours, 0);
+      const mtdHours = mtdEntries.reduce((sum, e) => sum + (e.hours ?? 0), 0);
 
-      // Calculate burn metrics using domain logic that would be in lib/metrics.ts
       const daysInMonth = endOfMonth.getDate();
       const dayOfMonth = now.getDate();
       const idealTargetSpendToDateCents = Math.round(
-        (client.monthlyRetainerAmountCents * dayOfMonth) / daysInMonth,
+        ((c.monthlyRetainerAmountCents ?? 0) * dayOfMonth) / daysInMonth,
       );
 
       const burnPctMTD =
-        client.monthlyRetainerAmountCents > 0
-          ? mtdSpendCents / client.monthlyRetainerAmountCents
+        (c.monthlyRetainerAmountCents ?? 0) > 0
+          ? mtdSpendCents / (c.monthlyRetainerAmountCents ?? 1)
           : 0;
 
       const varianceCents = mtdSpendCents - idealTargetSpendToDateCents;
@@ -208,41 +203,11 @@ export class DatabaseStorage implements IStorage {
       if (burnPctMTD > 1.1) health = "OVER";
       else if (burnPctMTD < 0.9) health = "UNDER";
 
-      // Apply health filter if specified
-      if (filters?.health && health !== filters.health) {
-        continue;
-      }
+      // Optional health filter
+      if (filters?.health && health !== filters.health) continue;
 
-      // Apply department filter if specified
-      if (filters?.department) {
-        const departmentQuery = await db
-          .select()
-          .from(departments)
-          .where(eq(departments.name, filters.department));
-
-        if (departmentQuery.length === 0) {
-          continue; // Department doesn't exist
-        }
-
-        const departmentId = departmentQuery[0].id;
-        const hasTimeInDepartment = await db
-          .select()
-          .from(timeEntries)
-          .where(
-            and(
-              eq(timeEntries.clientId, client.id),
-              eq(timeEntries.departmentId, departmentId),
-            ),
-          )
-          .limit(1);
-
-        if (hasTimeInDepartment.length === 0) {
-          continue; // Client has no time entries in this department
-        }
-      }
-
-      clientsWithMetrics.push({
-        ...client,
+      result.push({
+        ...c,
         mtdSpendCents,
         mtdHours,
         burnPctMTD,
@@ -253,7 +218,7 @@ export class DatabaseStorage implements IStorage {
       });
     }
 
-    return clientsWithMetrics;
+    return result;
   }
 
   async getClient(id: string): Promise<Client | undefined> {
@@ -261,11 +226,30 @@ export class DatabaseStorage implements IStorage {
     return client || undefined;
   }
 
+  // UPSERT by acceloId so n8n can post repeatedly without duplicates
   async createClient(insertClient: InsertClient): Promise<Client> {
-    const [client] = await db.insert(clients).values(insertClient).returning();
-    return client;
+    const [row] = await db
+      .insert(clients)
+      .values(insertClient)
+      .onConflictDoUpdate({
+        target: clients.acceloId, // unique on acceloId
+        set: {
+          name: insertClient.name,
+          status: insertClient.status ?? "ACTIVE",
+          startDate: insertClient.startDate ?? sql`now()`,
+          monthlyRetainerAmountCents:
+            insertClient.monthlyRetainerAmountCents ?? 0,
+          plannedHours: insertClient.plannedHours ?? null,
+          hourlyBlendedRateCents: insertClient.hourlyBlendedRateCents ?? null,
+          accountManager: insertClient.accountManager ?? "",
+          updatedAt: sql`now()`,
+        },
+      })
+      .returning();
+    return row;
   }
 
+  // ---------- Departments ----------
   async getDepartments(): Promise<Department[]> {
     return await db.select().from(departments);
   }
@@ -280,18 +264,18 @@ export class DatabaseStorage implements IStorage {
     return department;
   }
 
+  // ---------- Team members ----------
   async getTeamMembers(): Promise<TeamMember[]> {
     return await db.select().from(teamMembers);
   }
 
   async getTeamMembersByClient(clientId: string): Promise<TeamMember[]> {
-    const result = await db
+    const rows = await db
       .select({ teamMember: teamMembers })
       .from(teamMembers)
       .innerJoin(clientTeams, eq(clientTeams.memberId, teamMembers.id))
       .where(eq(clientTeams.clientId, clientId));
-
-    return result.map((row) => row.teamMember);
+    return rows.map((r) => r.teamMember);
   }
 
   async createTeamMember(insertMember: InsertTeamMember): Promise<TeamMember> {
@@ -302,13 +286,10 @@ export class DatabaseStorage implements IStorage {
     return member;
   }
 
+  // ---------- Client ↔ team ----------
   async getClientTeams(clientId?: string): Promise<ClientTeam[]> {
     let query = db.select().from(clientTeams);
-
-    if (clientId) {
-      query = query.where(eq(clientTeams.clientId, clientId));
-    }
-
+    if (clientId) query = query.where(eq(clientTeams.clientId, clientId));
     return await query;
   }
 
@@ -322,31 +303,20 @@ export class DatabaseStorage implements IStorage {
     return clientTeam;
   }
 
+  // ---------- Time entries ----------
   async getTimeEntries(filters?: {
     clientId?: string;
     startDate?: Date;
     endDate?: Date;
   }): Promise<TimeEntry[]> {
     let query = db.select().from(timeEntries);
-
-    const conditions = [];
-
-    if (filters?.clientId) {
-      conditions.push(eq(timeEntries.clientId, filters.clientId));
-    }
-
-    if (filters?.startDate) {
-      conditions.push(gte(timeEntries.start, filters.startDate));
-    }
-
-    if (filters?.endDate) {
-      conditions.push(lte(timeEntries.start, filters.endDate));
-    }
-
-    if (conditions.length > 0) {
-      query = query.where(and(...conditions));
-    }
-
+    const where: any[] = [];
+    if (filters?.clientId)
+      where.push(eq(timeEntries.clientId, filters.clientId));
+    if (filters?.startDate)
+      where.push(gte(timeEntries.start, filters.startDate));
+    if (filters?.endDate) where.push(lte(timeEntries.start, filters.endDate));
+    if (where.length > 0) query = query.where(and(...where));
     return await query.orderBy(desc(timeEntries.start));
   }
 
@@ -358,47 +328,49 @@ export class DatabaseStorage implements IStorage {
     return timeEntry;
   }
 
+  // ---------- Burn snapshots ----------
   async getBurnSnapshots(
     clientId: string,
     startDate?: Date,
     endDate?: Date,
   ): Promise<BurnSnapshot[]> {
-    let query = db
-      .select()
-      .from(burnSnapshots)
-      .where(eq(burnSnapshots.clientId, clientId));
+    const where: any[] = [eq(burnSnapshots.clientId, clientId)];
+    if (startDate)
+      where.push(gte(burnSnapshots.date, startDate.toISOString().slice(0, 10)));
+    if (endDate)
+      where.push(lte(burnSnapshots.date, endDate.toISOString().slice(0, 10)));
 
-    const conditions = [eq(burnSnapshots.clientId, clientId)];
+    const query =
+      where.length > 0
+        ? db
+            .select()
+            .from(burnSnapshots)
+            .where(and(...where))
+        : db.select().from(burnSnapshots);
 
-    if (startDate) {
-      conditions.push(
-        gte(burnSnapshots.date, startDate.toISOString().split("T")[0]),
-      );
-    }
-
-    if (endDate) {
-      conditions.push(
-        lte(burnSnapshots.date, endDate.toISOString().split("T")[0]),
-      );
-    }
-
-    return await db
-      .select()
-      .from(burnSnapshots)
-      .where(and(...conditions))
-      .orderBy(burnSnapshots.date);
+    return await query.orderBy(burnSnapshots.date);
   }
 
+  // UPSERT by (clientId, date)
   async createBurnSnapshot(
     insertSnapshot: InsertBurnSnapshot,
   ): Promise<BurnSnapshot> {
-    const [snapshot] = await db
+    const [row] = await db
       .insert(burnSnapshots)
       .values(insertSnapshot)
+      .onConflictDoUpdate({
+        target: [burnSnapshots.clientId, burnSnapshots.date],
+        set: {
+          spendToDateCents: insertSnapshot.spendToDateCents,
+          hoursToDate: insertSnapshot.hoursToDate,
+          targetSpendToDateCents: insertSnapshot.targetSpendToDateCents ?? 0,
+        },
+      })
       .returning();
-    return snapshot;
+    return row;
   }
 
+  // ---------- Monthly summaries ----------
   async getMonthlySummaries(clientId: string): Promise<MonthlySummary[]> {
     return await db
       .select()
@@ -417,6 +389,7 @@ export class DatabaseStorage implements IStorage {
     return summary;
   }
 
+  // ---------- Analytics ----------
   async getClientTimeByDepartment(
     clientId: string,
     month?: string,
@@ -434,7 +407,7 @@ export class DatabaseStorage implements IStorage {
       endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0);
     }
 
-    const result = await db
+    const rows = await db
       .select({
         departmentId: departments.id,
         departmentName: departments.name,
@@ -453,12 +426,12 @@ export class DatabaseStorage implements IStorage {
       )
       .groupBy(departments.id, departments.name);
 
-    return result.map((row) => ({
-      departmentId: row.departmentId,
-      departmentName: row.departmentName,
-      hours: Number(row.totalHours) || 0,
-      spendCents: Number(row.totalCostCents) || 0,
-      memberCount: Number(row.memberCount) || 0,
+    return rows.map((r) => ({
+      departmentId: r.departmentId,
+      departmentName: r.departmentName,
+      hours: Number(r.totalHours) || 0,
+      spendCents: Number(r.totalCostCents) || 0,
+      memberCount: Number(r.memberCount) || 0,
     }));
   }
 
@@ -468,28 +441,25 @@ export class DatabaseStorage implements IStorage {
     totalRetainerCents: number;
     mtdSpendCents: number;
   }> {
-    const activeClientsResult = await db
+    const activeClientsRow = await db
       .select({ count: sql<number>`count(*)::integer` })
       .from(clients)
       .where(eq(clients.status, "ACTIVE"));
+    const activeClients = Number(activeClientsRow[0]?.count) || 0;
 
-    const activeClients = Number(activeClientsResult[0]?.count) || 0;
-
-    const totalRetainerResult = await db
+    const totalRetainerRow = await db
       .select({
         total: sql<number>`sum(${clients.monthlyRetainerAmountCents})::bigint`,
       })
       .from(clients)
       .where(eq(clients.status, "ACTIVE"));
+    const totalRetainerCents = Number(totalRetainerRow[0]?.total) || 0;
 
-    const totalRetainerCents = Number(totalRetainerResult[0]?.total) || 0;
-
-    // Get MTD spend across all active clients
     const now = new Date();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
 
-    const mtdSpendResult = await db
+    const mtdSpendRow = await db
       .select({
         total: sql<number>`sum(${timeEntries.costCents})::bigint`,
       })
@@ -502,12 +472,10 @@ export class DatabaseStorage implements IStorage {
           lte(timeEntries.start, endOfMonth),
         ),
       );
+    const mtdSpendCents = Number(mtdSpendRow[0]?.total) || 0;
 
-    const mtdSpendCents = Number(mtdSpendResult[0]?.total) || 0;
-
-    // Calculate on-track percentage (simplified)
-    const clientsWithMetrics = await this.getClients({ status: "ACTIVE" });
-    const onTrackCount = clientsWithMetrics.filter(
+    const withMetrics = await this.getClients({ status: "ACTIVE" });
+    const onTrackCount = withMetrics.filter(
       (c) => c.health === "ON_TRACK",
     ).length;
     const onTrackPercentage =
@@ -545,7 +513,7 @@ export class DatabaseStorage implements IStorage {
     const startDate = new Date();
     startDate.setMonth(startDate.getMonth() - months);
 
-    const result = await db
+    const rows = await db
       .select({
         clientId: clients.id,
         clientName: clients.name,
@@ -573,12 +541,11 @@ export class DatabaseStorage implements IStorage {
       )
       .limit(5);
 
-    return result.map((row) => {
-      const totalCostCents = Number(row.totalCostCents) || 0;
-      const retainerCents = Number(row.retainerCents) || 0;
-      const totalHours = Number(row.totalHours) || 0;
+    return rows.map((r) => {
+      const totalCostCents = Number(r.totalCostCents) || 0;
+      const retainerCents = Number(r.retainerCents) || 0;
+      const totalHours = Number(r.totalHours) || 0;
 
-      // Calculate overserving hours based on the ratio of overserving cost to total cost
       const overservingCents = Math.max(0, totalCostCents - retainerCents);
       const overservingHours =
         totalCostCents > 0
@@ -586,9 +553,9 @@ export class DatabaseStorage implements IStorage {
           : 0;
 
       return {
-        clientId: row.clientId,
-        clientName: row.clientName,
-        accountManager: row.accountManager,
+        clientId: r.clientId,
+        clientName: r.clientName,
+        accountManager: r.accountManager,
         averageOverservingHours: overservingHours / months,
         averageOverservingCents: overservingCents / months,
       };
@@ -601,7 +568,7 @@ export class DatabaseStorage implements IStorage {
     const startDate = new Date();
     startDate.setMonth(startDate.getMonth() - months);
 
-    const result = await db
+    const rows = await db
       .select({
         memberId: teamMembers.id,
         memberName: teamMembers.name,
@@ -624,20 +591,19 @@ export class DatabaseStorage implements IStorage {
       .orderBy(sql`sum(${timeEntries.costCents}) DESC`)
       .limit(5);
 
-    return result.map((row) => {
-      const totalCostCents = Number(row.totalCostCents) || 0;
-      const totalHours = Number(row.totalHours) || 0;
-      const avgRetainerUsage = Number(row.avgRetainerUsage) || 0;
+    return rows.map((r) => {
+      const totalCostCents = Number(r.totalCostCents) || 0;
+      const totalHours = Number(r.totalHours) || 0;
+      const avgRetainerUsage = Number(r.avgRetainerUsage) || 0;
 
-      // Calculate overserving hours based on usage above baseline (20% threshold)
-      const baselineUsage = 0.2; // 20% baseline
+      const baselineUsage = 0.2;
       const overservingRatio = Math.max(0, avgRetainerUsage - baselineUsage);
       const overservingHours = overservingRatio * totalHours;
 
       return {
-        memberId: row.memberId,
-        memberName: row.memberName,
-        department: row.departmentName,
+        memberId: r.memberId,
+        memberName: r.memberName,
+        department: r.departmentName,
         averageOverservingHours: overservingHours / months,
         averageOverservingCents: totalCostCents / months,
       };
@@ -646,34 +612,28 @@ export class DatabaseStorage implements IStorage {
 
   async calculateLostRevenue(): Promise<number> {
     const hourlyRate = await this.getHourlyRate();
-    const overservingClients = await this.getTopOverservingClients(1); // Last month
-    const overservingEmployees = await this.getTopOverservingEmployees(1); // Last month
+    const overservingClients = await this.getTopOverservingClients(1);
+    const overservingEmployees = await this.getTopOverservingEmployees(1);
 
-    // Calculate lost revenue from overserving hours * hourly rate
-    const clientOverservingHours = overservingClients.reduce((sum, client) => {
-      return sum + Math.max(0, client.averageOverservingHours);
-    }, 0);
-
+    const clientOverservingHours = overservingClients.reduce(
+      (sum, c) => sum + Math.max(0, c.averageOverservingHours),
+      0,
+    );
     const employeeOverservingHours = overservingEmployees.reduce(
-      (sum, employee) => {
-        return sum + Math.max(0, employee.averageOverservingHours);
-      },
+      (sum, e) => sum + Math.max(0, e.averageOverservingHours),
       0,
     );
 
-    // Use the maximum of client or employee overserving to avoid double counting
     const totalOverservingHours = Math.max(
       clientOverservingHours,
       employeeOverservingHours,
     );
 
-    // Convert hourly rate to cents and multiply by overserving hours
     const lostRevenueCents = totalOverservingHours * (hourlyRate * 100);
-
     return lostRevenueCents;
   }
 
-  // Settings methods
+  // ---------- Settings ----------
   async getSettings(): Promise<Settings[]> {
     return await db.select().from(settings);
   }
@@ -711,55 +671,8 @@ export class DatabaseStorage implements IStorage {
 
   async getHourlyRate(): Promise<number> {
     const setting = await this.getSetting("hourly_rate");
-    return setting ? parseFloat(setting.value) : 150; // Default $150/hour
+    return setting ? parseFloat(setting.value) : 150;
   }
 }
 
 export const storage = new DatabaseStorage();
-// get by acceloId
-export async function getClientByAcceloId(acceloId: string) {
-  const rows = await db
-    .select()
-    .from(clients)
-    .where(eq(clients.acceloId, acceloId))
-    .limit(1);
-  return rows[0] || null;
-}
-
-export async function upsertClient(insertClient: any) {
-  const [row] = await db
-    .insert(clients)
-    .values(insertClient)
-    .onConflictDoUpdate({
-      target: clients.acceloId,
-      set: {
-        name: insertClient.name,
-        status: insertClient.status ?? "ACTIVE",
-        startDate: new Date(insertClient.startDate ?? new Date()),
-        monthlyRetainerAmountCents:
-          insertClient.monthlyRetainerAmountCents ?? 0,
-        plannedHours: insertClient.plannedHours ?? null,
-        hourlyBlendedRateCents: insertClient.hourlyBlendedRateCents ?? null,
-        accountManager: insertClient.accountManager ?? "",
-        updatedAt: new Date(),
-      },
-    })
-    .returning();
-  return row;
-}
-
-export async function upsertBurnSnapshot(insertSnap: any) {
-  const [row] = await db
-    .insert(burnSnapshots)
-    .values(insertSnap)
-    .onConflictDoUpdate({
-      target: [burnSnapshots.clientId, burnSnapshots.date],
-      set: {
-        spendToDateCents: insertSnap.spendToDateCents,
-        hoursToDate: insertSnap.hoursToDate,
-        targetSpendToDateCents: insertSnap.targetSpendToDateCents ?? 0,
-      },
-    })
-    .returning();
-  return row;
-}

@@ -1,6 +1,7 @@
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
+import { db } from "./db";
 
 const app = express();
 app.use(express.json());
@@ -58,14 +59,53 @@ app.use((req, res, next) => {
 
   // ALWAYS serve the app on the port specified in the environment variable PORT
   // Other ports are firewalled. Default to 5000 if not specified.
-  // this serves both the API and the client.
-  // It is the only port that is not firewalled.
-  const port = parseInt(process.env.PORT || '5000', 10);
-  server.listen({
-    port,
-    host: "0.0.0.0",
-    reusePort: true,
-  }, () => {
-    log(`serving on port ${port}`);
+  const port = parseInt(process.env.PORT || "5000", 10);
+
+  // --- DEV: one-time DB init route ---
+  app.post("/api/dev/init", async (_req, res) => {
+    try {
+      await db.execute(`
+        CREATE TABLE IF NOT EXISTS clients (
+          accelo_id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          status TEXT DEFAULT 'ACTIVE',
+          start_date TIMESTAMPTZ,
+          monthly_retainer_amount_cents INTEGER DEFAULT 0,
+          planned_hours REAL,
+          hourly_blended_rate_cents INTEGER,
+          account_manager TEXT,
+          created_at TIMESTAMPTZ DEFAULT NOW(),
+          updated_at TIMESTAMPTZ DEFAULT NOW()
+        );
+      `);
+
+      await db.execute(`
+        CREATE TABLE IF NOT EXISTS burn_snapshots (
+          client_id TEXT NOT NULL REFERENCES clients(accelo_id) ON DELETE CASCADE,
+          date DATE NOT NULL,
+          spend_to_date_cents INTEGER NOT NULL DEFAULT 0,
+          hours_to_date REAL NOT NULL DEFAULT 0,
+          target_spend_to_date_cents INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY (client_id, date)
+        );
+      `);
+
+      res.json({ ok: true, created: ["clients", "burn_snapshots"] });
+    } catch (e: any) {
+      console.error("init error", e);
+      res.status(500).json({ ok: false, error: String(e?.message || e) });
+    }
   });
+  // --- END DEV route ---
+
+  server.listen(
+    {
+      port,
+      host: "0.0.0.0",
+      reusePort: true,
+    },
+    () => {
+      log(`serving on port ${port}`);
+    },
+  );
 })();
